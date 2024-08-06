@@ -324,6 +324,8 @@ namespace basisu
 		bool_param<false> m_uastc;
 
 		bool_param<false> m_use_opencl;
+        
+        int job_id;
 
 		// If m_read_source_images is true, m_source_filenames (and optionally m_source_alpha_filenames) contains the filenames of PNG images to read. 
 		// Otherwise, the compressor processes the images in m_source_images.
@@ -481,7 +483,7 @@ namespace basisu
 			cECFailedCreateKTX2File
 		};
 
-		error_code process();
+		error_code process(int jobId);
 
 		// The output .basis file will always be valid of process() succeeded.
 		const uint8_vec &get_output_basis_file() const { return m_output_basis_file; }

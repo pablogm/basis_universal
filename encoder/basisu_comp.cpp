@@ -16,6 +16,8 @@
 #include "basisu_enc.h"
 #include <unordered_set>
 #include <atomic>
+#include <chrono>
+#include <iostream>
 
 // basisu_transcoder.cpp is where basisu_miniz lives now, we just need the declarations here.
 #define MINIZ_NO_ZLIB_COMPATIBLE_NAMES
@@ -214,59 +216,120 @@ namespace basisu
 
 		return true;
 	}
-		
-	basis_compressor::error_code basis_compressor::process()
-	{
-		debug_printf("basis_compressor::process\n");
 
-		if (!read_source_images())
-			return cECFailedReadingSourceImages;
+#define LOG_TIME_BOOL(operation, block, fail_code) \
+    { \
+        auto start = std::chrono::high_resolution_clock::now(); \
+        bool result = block; \
+        auto end = std::chrono::high_resolution_clock::now(); \
+        std::chrono::duration<double> duration = end - start; \
+        std::cout << operation << " took " << duration.count() << " seconds." << std::endl; \
+        if (!result) return fail_code; \
+    }
 
-		if (!validate_texture_type_constraints())
-			return cECFailedValidating;
+#define LOG_TIME_ERROR_CODE(operation, block) \
+    { \
+        auto start = std::chrono::high_resolution_clock::now(); \
+        basis_compressor::error_code ec = block; \
+        auto end = std::chrono::high_resolution_clock::now(); \
+        std::chrono::duration<double> duration = end - start; \
+        std::cout << operation << " took " << duration.count() << " seconds." << std::endl; \
+        if (ec != cECSuccess) return ec; \
+    }
 
-		if (m_params.m_create_ktx2_file)
-		{
-			if (!validate_ktx2_constraints())
-				return cECFailedValidating;
-		}
+     basis_compressor::error_code basis_compressor::process(int jobId)
+     {
+         debug_printf("basis_compressor::process\n");
 
-		if (!extract_source_blocks())
-			return cECFailedFrontEnd;
+         LOG_TIME_BOOL("read_source_images", read_source_images(), cECFailedReadingSourceImages);
 
-		if (m_params.m_uastc)
-		{
-			error_code ec = encode_slices_to_uastc();
-			if (ec != cECSuccess)
-				return ec;
-		}
-		else
-		{
-			if (!process_frontend())
-				return cECFailedFrontEnd;
+         LOG_TIME_BOOL("validate_texture_type_constraints", validate_texture_type_constraints(), cECFailedValidating);
 
-			if (!extract_frontend_texture_data())
-				return cECFailedFontendExtract;
+         if (m_params.m_create_ktx2_file)
+         {
+             LOG_TIME_BOOL("validate_ktx2_constraints", validate_ktx2_constraints(), cECFailedValidating);
+         }
 
-			if (!process_backend())
-				return cECFailedBackend;
-		}
+         LOG_TIME_BOOL("extract_source_blocks", extract_source_blocks(), cECFailedFrontEnd);
 
-		if (!create_basis_file_and_transcode())
-			return cECFailedCreateBasisFile;
-		
-		if (m_params.m_create_ktx2_file)
-		{
-			if (!create_ktx2_file())
-				return cECFailedCreateKTX2File;
-		}
+         if (m_params.m_uastc)
+         {
+             std::string str = "encode_slices_to_uastc - process id: " + std::to_string(jobId);
+             LOG_TIME_ERROR_CODE(str, encode_slices_to_uastc());
+         }
+         else
+         {
+             LOG_TIME_BOOL("process_frontend", process_frontend(), cECFailedFrontEnd);
 
-		if (!write_output_files_and_compute_stats())
-			return cECFailedWritingOutput;
+             LOG_TIME_BOOL("extract_frontend_texture_data", extract_frontend_texture_data(), cECFailedFontendExtract);
 
-		return cECSuccess;
-	}
+             LOG_TIME_BOOL("process_backend", process_backend(), cECFailedBackend);
+         }
 
+         LOG_TIME_BOOL("create_basis_file_and_transcode", create_basis_file_and_transcode(), cECFailedCreateBasisFile);
+
+         if (m_params.m_create_ktx2_file)
+         {
+             LOG_TIME_BOOL("create_ktx2_file", create_ktx2_file(), cECFailedCreateKTX2File);
+         }
+
+         LOG_TIME_BOOL("write_output_files_and_compute_stats", write_output_files_and_compute_stats(), cECFailedWritingOutput);
+
+         return cECSuccess;
+     }
+/*
+    basis_compressor::error_code basis_compressor::process()
+    {
+        debug_printf("basis_compressor::process\n");
+
+        if (!read_source_images())
+            return cECFailedReadingSourceImages;
+
+        if (!validate_texture_type_constraints())
+            return cECFailedValidating;
+
+        if (m_params.m_create_ktx2_file)
+        {
+            if (!validate_ktx2_constraints())
+                return cECFailedValidating;
+        }
+
+        if (!extract_source_blocks())
+            return cECFailedFrontEnd;
+
+        if (m_params.m_uastc)
+        {
+            error_code ec = encode_slices_to_uastc();
+            if (ec != cECSuccess)
+                return ec;
+        }
+        else
+        {
+            if (!process_frontend())
+                return cECFailedFrontEnd;
+
+            if (!extract_frontend_texture_data())
+                return cECFailedFontendExtract;
+
+            if (!process_backend())
+                return cECFailedBackend;
+        }
+
+        if (!create_basis_file_and_transcode())
+            return cECFailedCreateBasisFile;
+        
+        if (m_params.m_create_ktx2_file)
+        {
+            if (!create_ktx2_file())
+                return cECFailedCreateKTX2File;
+        }
+
+        if (!write_output_files_and_compute_stats())
+            return cECFailedWritingOutput;
+
+        return cECSuccess;
+    }
+*/
 	basis_compressor::error_code basis_compressor::encode_slices_to_uastc()
 	{
 		debug_printf("basis_compressor::encode_slices_to_uastc\n");
@@ -294,6 +357,8 @@ namespace basisu
 			
 			std::atomic<uint32_t> total_blocks_processed;
 			total_blocks_processed = 0;
+
+			job_pool::token token{0};
 
 			const uint32_t N = 256;
 			for (uint32_t block_index_iter = 0; block_index_iter < total_blocks; block_index_iter += N)
@@ -336,13 +401,13 @@ namespace basisu
 						}
 
 #ifndef __EMSCRIPTEN__
-					});
+					}, &token);
 #endif
 
 			} // block_index_iter
 
 #ifndef __EMSCRIPTEN__
-			m_params.m_pJob_pool->wait_for_all();
+			m_params.m_pJob_pool->wait_for_all(&token);
 #endif
 
 			if (m_params.m_rdo_uastc)
@@ -2191,7 +2256,7 @@ namespace basisu
 
 		for (uint32_t pindex = 0; pindex < params_vec.size(); pindex++)
 		{
-			jpool.add_job([pindex, &params_vec, &results_vec, &result, &opencl_failed] {
+			jpool.add_job([pindex, &params_vec, &results_vec, &result, &opencl_failed, &jpool] {
 
 				basis_compressor_params params = params_vec[pindex];
 				parallel_results& results = results_vec[pindex];
@@ -2201,9 +2266,7 @@ namespace basisu
 
 				basis_compressor c;
 				
-				// Dummy job pool
-				job_pool task_jpool(1);
-				params.m_pJob_pool = &task_jpool;
+				params.m_pJob_pool = &jpool;
 				// TODO: Remove this flag entirely
 				params.m_multithreading = true; 
 				
@@ -2218,7 +2281,7 @@ namespace basisu
 
 				if (status)
 				{
-					basis_compressor::error_code ec = c.process();
+					basis_compressor::error_code ec = c.process(params.job_id);
 
 					if (c.get_opencl_failed())
 						opencl_failed = true;
@@ -2232,6 +2295,8 @@ namespace basisu
 						results.m_stats = c.get_stats();
 						results.m_basis_bits_per_texel = c.get_basis_bits_per_texel();
 						results.m_any_source_image_has_alpha = c.get_any_source_image_has_alpha();
+                        
+                        printf("Finished job: %u - %u \n", pindex, params.job_id);
 					}
 					else
 					{
@@ -2345,7 +2410,7 @@ namespace basisu
 			return nullptr;
 		}
 
-		basis_compressor::error_code ec = comp.process();
+		basis_compressor::error_code ec = comp.process(0);
 
 		if (ec != basis_compressor::cECSuccess)
 		{
